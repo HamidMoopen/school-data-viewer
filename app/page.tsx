@@ -3,7 +3,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 
 type Post = { id: number; post_url: string; post_text: string; author_name: string | null; date_relative: string; scraped_comment_count: number }
-type Comment = { id: number; post_id: number; author_name: string; comment_text: string; relative_date: string; likes: number; is_reply: boolean }
+type Comment = { id: number; post_id: number; author_name: string; comment_text: string; relative_date: string; likes: number; is_reply: boolean; author_profile_url?: string | null }
 
 const SCHOOLS: [string, RegExp][] = [
   ['Great Hearts', /great\s*hearts/i],
@@ -63,8 +63,8 @@ function fbProfileUrl(name: string) {
   return `https://www.facebook.com/search/people/?q=${encodeURIComponent(name)}`
 }
 
-function AuthorLink({ name, className = '' }: { name: string; className?: string }) {
-  const url = fbProfileUrl(name)
+function AuthorLink({ name, profileUrl, className = '' }: { name: string; profileUrl?: string | null; className?: string }) {
+  const url = profileUrl || fbProfileUrl(name)
   if (!url) return <span className={className}>{name || 'Anonymous'}</span>
   return <a href={url} target="_blank" rel="noopener" className={`${className} hover:underline cursor-pointer`} onClick={e => e.stopPropagation()}>{name}</a>
 }
@@ -83,12 +83,13 @@ export default function Home() {
   const [selectedCommenter, setSelectedCommenter] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedPost, setExpandedPost] = useState<number | null>(null)
+  const [drilldown, setDrilldown] = useState<'posts' | 'comments' | null>(null)
 
   useEffect(() => {
     async function load() {
       const [{ data: p }, { data: c }] = await Promise.all([
         supabase.from('fb_school_discussions').select('id, post_url, post_text, author_name, date_relative, scraped_comment_count').order('scraped_comment_count', { ascending: false }),
-        supabase.from('fb_comments').select('id, post_id, author_name, comment_text, relative_date, likes, is_reply').order('likes', { ascending: false })
+        supabase.from('fb_comments').select('id, post_id, author_name, comment_text, relative_date, likes, is_reply, author_profile_url').order('likes', { ascending: false })
       ])
       setPosts(p || [])
       setComments(c || [])
@@ -108,6 +109,16 @@ export default function Home() {
     posts.forEach(p => { map[p.id] = p.post_url })
     return map
   }, [posts])
+
+  const profileUrlMap = useMemo(() => {
+    const map: Record<string, string> = {}
+    comments.forEach(c => {
+      if (c.author_profile_url && c.author_name && !map[c.author_name]) {
+        map[c.author_name] = c.author_profile_url
+      }
+    })
+    return map
+  }, [comments])
 
   const schoolMentions = useMemo(() => {
     const counts: Record<string, { posts: Post[]; comments: Comment[]; name: string }> = {}
@@ -191,18 +202,63 @@ export default function Home() {
             {/* Stat Cards */}
             <div className="grid grid-cols-4 gap-4">
               {[
-                { label: 'Total Posts', value: posts.length, color: 'border-blue-500', sub: 'school choice discussions' },
-                { label: 'Total Comments', value: comments.length.toLocaleString(), color: 'border-emerald-500', sub: 'parent responses' },
-                { label: 'Unique Voices', value: uniqueCommenters, color: 'border-purple-500', sub: 'distinct commenters' },
-                { label: 'Avg Comments/Post', value: (comments.length / posts.length).toFixed(1), color: 'border-amber-500', sub: 'engagement rate' },
+                { label: 'Total Posts', value: posts.length, color: 'border-blue-500', sub: 'school choice discussions', action: () => setDrilldown(drilldown === 'posts' ? null : 'posts') },
+                { label: 'Total Comments', value: comments.length.toLocaleString(), color: 'border-emerald-500', sub: 'parent responses', action: () => setDrilldown(drilldown === 'comments' ? null : 'comments') },
+                { label: 'Unique Voices', value: uniqueCommenters, color: 'border-purple-500', sub: 'distinct commenters', action: () => setTab('commenters') },
+                { label: 'Avg Comments/Post', value: (comments.length / posts.length).toFixed(1), color: 'border-amber-500', sub: 'engagement rate', action: undefined },
               ].map(s => (
-                <div key={s.label} className={`bg-gray-900 border border-gray-800 border-l-4 ${s.color} rounded-lg p-5`}>
+                <div key={s.label} onClick={s.action} className={`bg-gray-900 border border-gray-800 border-l-4 ${s.color} rounded-lg p-5 ${s.action ? 'cursor-pointer hover:bg-gray-800 transition-colors' : ''}`}>
                   <div className="text-2xl font-bold">{s.value}</div>
-                  <div className="text-sm text-gray-400 mt-1">{s.label}</div>
+                  <div className="text-sm text-gray-400 mt-1">{s.label}{s.action ? ' →' : ''}</div>
                   <div className="text-xs text-gray-600 mt-0.5">{s.sub}</div>
                 </div>
               ))}
             </div>
+
+            {/* Drilldown */}
+            {drilldown === 'posts' && (
+              <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-semibold">All Posts ({posts.length})</h2>
+                  <button onClick={() => setDrilldown(null)} className="text-xs text-gray-500 hover:text-gray-300">Close</button>
+                </div>
+                <div className="space-y-2 max-h-[600px] overflow-y-auto">
+                  {posts.map(p => (
+                    <div key={p.id} className="flex items-start gap-3 p-2 rounded hover:bg-gray-800/50">
+                      <div className="bg-blue-600/20 text-blue-400 text-xs font-bold rounded px-2 py-1 shrink-0">{p.scraped_comment_count}</div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-gray-300" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.post_text || '(image post)'}</p>
+                        <div className="flex gap-2 mt-1">
+                          <span className="text-xs text-gray-600">{p.date_relative}</span>
+                          <a href={p.post_url} target="_blank" rel="noopener" className="text-xs text-blue-500 hover:underline">View on FB &rarr;</a>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {drilldown === 'comments' && (
+              <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-semibold">Top Comments by Likes</h2>
+                  <button onClick={() => setDrilldown(null)} className="text-xs text-gray-500 hover:text-gray-300">Close</button>
+                </div>
+                <div className="space-y-2 max-h-[600px] overflow-y-auto">
+                  {comments.slice(0, 100).map(c => (
+                    <div key={c.id} className="p-2 rounded hover:bg-gray-800/50">
+                      <div className="flex items-center gap-2 mb-1">
+                        <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 text-xs font-medium" />
+                        {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
+                        {postUrlMap[c.post_id] && <a href={postUrlMap[c.post_id]} target="_blank" rel="noopener" className="text-xs text-blue-500 hover:underline ml-auto">View post &rarr;</a>}
+                      </div>
+                      <p className="text-sm text-gray-300">{c.comment_text?.substring(0, 200)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Two columns */}
             <div className="grid grid-cols-2 gap-6">
@@ -245,7 +301,7 @@ export default function Home() {
                           <div className="mt-2 space-y-1.5 border-l-2 border-gray-700 pl-3">
                             {commentsByPost[p.id].slice(0, 5).map(c => (
                               <div key={c.id} className="text-xs">
-                                <AuthorLink name={c.author_name || 'Anon'} className="text-blue-400" />
+                                <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400" />
                                 {c.likes > 0 && <span className="text-yellow-600 ml-1">({c.likes})</span>}
                                 <span className="text-gray-400 ml-1">{c.comment_text?.substring(0, 120)}...</span>
                               </div>
@@ -326,7 +382,7 @@ export default function Home() {
                               <div className="mt-3 border-t border-gray-800 pt-3 space-y-2">
                                 {commentsByPost[p.id].map(c => (
                                   <div key={c.id} className="text-xs pl-3 border-l-2 border-gray-700">
-                                    <AuthorLink name={c.author_name || 'Anon'} className="text-blue-400 font-medium" />
+                                    <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 font-medium" />
                                     {c.likes > 0 && <span className="text-yellow-600 ml-1">{c.likes} likes</span>}
                                     <p className="text-gray-400 mt-0.5">{c.comment_text}</p>
                                   </div>
@@ -345,7 +401,7 @@ export default function Home() {
                         {school.comments.slice(0, 20).map(c => (
                           <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                             <div className="flex items-center gap-2 mb-1">
-                              <AuthorLink name={c.author_name || 'Anon'} className="text-blue-400 text-xs font-medium" />
+                              <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 text-xs font-medium" />
                               {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
                               <span className="text-gray-600 text-xs">{c.relative_date}</span>
                             </div>
@@ -447,7 +503,7 @@ export default function Home() {
                       {searchResults.comments.slice(0, 30).map(c => (
                         <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                           <div className="flex items-center gap-2 mb-1">
-                            <AuthorLink name={c.author_name || 'Anon'} className="text-blue-400 text-xs font-medium" />
+                            <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 text-xs font-medium" />
                             {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
                             {postUrlMap[c.post_id] && <a href={postUrlMap[c.post_id]} target="_blank" rel="noopener" className="text-xs text-blue-500 hover:underline ml-auto">View post &rarr;</a>}
                           </div>
