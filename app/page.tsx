@@ -58,6 +58,22 @@ function download(content: string, filename: string) {
 
 function csvEscape(s: string) { return `"${(s || '').replace(/"/g, '""').replace(/\n/g, ' ')}"` }
 
+function fbProfileUrl(name: string) {
+  if (!name || name.startsWith('Anonymous')) return null
+  return `https://www.facebook.com/search/people/?q=${encodeURIComponent(name)}`
+}
+
+function AuthorLink({ name, className = '' }: { name: string; className?: string }) {
+  const url = fbProfileUrl(name)
+  if (!url) return <span className={className}>{name || 'Anonymous'}</span>
+  return <a href={url} target="_blank" rel="noopener" className={`${className} hover:underline cursor-pointer`} onClick={e => e.stopPropagation()}>{name}</a>
+}
+
+function PostLink({ url, children, className = '' }: { url: string; children: React.ReactNode; className?: string }) {
+  if (!url) return <>{children}</>
+  return <a href={url} target="_blank" rel="noopener" className={`${className} hover:underline`} onClick={e => e.stopPropagation()}>{children}</a>
+}
+
 export default function Home() {
   const [posts, setPosts] = useState<Post[]>([])
   const [comments, setComments] = useState<Comment[]>([])
@@ -86,6 +102,12 @@ export default function Home() {
     comments.forEach(c => { (map[c.post_id] ||= []).push(c) })
     return map
   }, [comments])
+
+  const postUrlMap = useMemo(() => {
+    const map: Record<number, string> = {}
+    posts.forEach(p => { map[p.id] = p.post_url })
+    return map
+  }, [posts])
 
   const schoolMentions = useMemo(() => {
     const counts: Record<string, { posts: Post[]; comments: Comment[]; name: string }> = {}
@@ -223,7 +245,7 @@ export default function Home() {
                           <div className="mt-2 space-y-1.5 border-l-2 border-gray-700 pl-3">
                             {commentsByPost[p.id].slice(0, 5).map(c => (
                               <div key={c.id} className="text-xs">
-                                <span className="text-blue-400">{c.author_name || 'Anon'}</span>
+                                <AuthorLink name={c.author_name || 'Anon'} className="text-blue-400" />
                                 {c.likes > 0 && <span className="text-yellow-600 ml-1">({c.likes})</span>}
                                 <span className="text-gray-400 ml-1">{c.comment_text?.substring(0, 120)}...</span>
                               </div>
@@ -304,7 +326,7 @@ export default function Home() {
                               <div className="mt-3 border-t border-gray-800 pt-3 space-y-2">
                                 {commentsByPost[p.id].map(c => (
                                   <div key={c.id} className="text-xs pl-3 border-l-2 border-gray-700">
-                                    <span className="text-blue-400 font-medium">{c.author_name || 'Anon'}</span>
+                                    <AuthorLink name={c.author_name || 'Anon'} className="text-blue-400 font-medium" />
                                     {c.likes > 0 && <span className="text-yellow-600 ml-1">{c.likes} likes</span>}
                                     <p className="text-gray-400 mt-0.5">{c.comment_text}</p>
                                   </div>
@@ -323,7 +345,7 @@ export default function Home() {
                         {school.comments.slice(0, 20).map(c => (
                           <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                             <div className="flex items-center gap-2 mb-1">
-                              <span className="text-blue-400 text-xs font-medium">{c.author_name || 'Anon'}</span>
+                              <AuthorLink name={c.author_name || 'Anon'} className="text-blue-400 text-xs font-medium" />
                               {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
                               <span className="text-gray-600 text-xs">{c.relative_date}</span>
                             </div>
@@ -371,9 +393,12 @@ export default function Home() {
                           <td colSpan={5} className="px-4 py-3 bg-gray-800/30">
                             <div className="space-y-2 max-h-80 overflow-y-auto">
                               {c.comments.slice(0, 15).map(cm => (
-                                <div key={cm.id} className="text-xs border-l-2 border-blue-600/30 pl-3">
-                                  {cm.likes > 0 && <span className="text-yellow-600">{cm.likes} likes &middot; </span>}
-                                  <span className="text-gray-400">{cm.comment_text?.substring(0, 200)}{(cm.comment_text?.length || 0) > 200 ? '...' : ''}</span>
+                                <div key={cm.id} className="text-xs border-l-2 border-blue-600/30 pl-3 flex items-start gap-2">
+                                  <div className="flex-1">
+                                    {cm.likes > 0 && <span className="text-yellow-600">{cm.likes} likes &middot; </span>}
+                                    <span className="text-gray-400">{cm.comment_text?.substring(0, 200)}{(cm.comment_text?.length || 0) > 200 ? '...' : ''}</span>
+                                  </div>
+                                  {postUrlMap[cm.post_id] && <a href={postUrlMap[cm.post_id]} target="_blank" rel="noopener" className="text-blue-500 hover:underline shrink-0">FB &rarr;</a>}
                                 </div>
                               ))}
                             </div>
@@ -422,8 +447,9 @@ export default function Home() {
                       {searchResults.comments.slice(0, 30).map(c => (
                         <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                           <div className="flex items-center gap-2 mb-1">
-                            <span className="text-blue-400 text-xs font-medium">{c.author_name || 'Anon'}</span>
+                            <AuthorLink name={c.author_name || 'Anon'} className="text-blue-400 text-xs font-medium" />
                             {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
+                            {postUrlMap[c.post_id] && <a href={postUrlMap[c.post_id]} target="_blank" rel="noopener" className="text-xs text-blue-500 hover:underline ml-auto">View post &rarr;</a>}
                           </div>
                           <p className="text-sm text-gray-300">{c.comment_text?.substring(0, 300)}</p>
                         </div>
