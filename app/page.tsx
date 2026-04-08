@@ -44,11 +44,22 @@ const NEG_WORDS = /\b(avoid|terrible|bad|toxic|worst|horrible|disappointing|poor
 function sentiment(texts: string[]): { pos: number; neg: number; neu: number } {
   let pos = 0, neg = 0, neu = 0
   for (const t of texts) {
-    const p = (t.match(POS_WORDS) || []).length
-    const n = (t.match(NEG_WORDS) || []).length
-    if (p > n) pos++; else if (n > p) neg++; else neu++
+    const s = sentimentScore(t)
+    if (s > 0) pos++; else if (s < 0) neg++; else neu++
   }
   return { pos, neg, neu }
+}
+
+function sentimentScore(text: string): number {
+  const p = (text.match(POS_WORDS) || []).length
+  const n = (text.match(NEG_WORDS) || []).length
+  return p - n
+}
+
+function sentimentLabel(score: number): { text: string; color: string } {
+  if (score > 0) return { text: 'positive', color: 'text-emerald-400 bg-emerald-400/10' }
+  if (score < 0) return { text: 'negative', color: 'text-red-400 bg-red-400/10' }
+  return { text: 'neutral', color: 'text-gray-500 bg-gray-500/10' }
 }
 
 function download(content: string, filename: string) {
@@ -84,6 +95,7 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedPost, setExpandedPost] = useState<number | null>(null)
   const [drilldown, setDrilldown] = useState<'posts' | 'comments' | null>(null)
+  const [commentSort, setCommentSort] = useState<'likes' | 'positive' | 'negative' | 'all'>('likes')
 
   useEffect(() => {
     async function load() {
@@ -323,7 +335,8 @@ export default function Home() {
           <div className="flex gap-6">
             {/* School List */}
             <div className="w-72 shrink-0 space-y-1">
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Schools ({schoolMentions.length})</h2>
+              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Schools ({schoolMentions.length})</h2>
+              <p className="text-xs text-gray-600 mb-3">Click a school to analyze sentiment</p>
               {schoolMentions.map(s => (
                 <button key={s.name} onClick={() => setSelectedSchool(s.name)}
                   className={`w-full text-left px-3 py-2 rounded-lg text-sm flex justify-between items-center transition-colors ${selectedSchool === s.name ? 'bg-blue-600/20 text-blue-400 border border-blue-600/30' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'}`}>
@@ -394,20 +407,43 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* Top Comments */}
+                    {/* Comments with Sentiment */}
                     <div>
-                      <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Top Comments ({school.comments.length})</h3>
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Comments ({school.comments.length})</h3>
+                        <div className="flex gap-1">
+                          {(['likes', 'positive', 'negative', 'all'] as const).map(s => (
+                            <button key={s} onClick={() => setCommentSort(s)}
+                              className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${commentSort === s ? s === 'positive' ? 'bg-emerald-600/20 text-emerald-400' : s === 'negative' ? 'bg-red-600/20 text-red-400' : 'bg-blue-600/20 text-blue-400' : 'text-gray-500 hover:text-gray-300 bg-gray-800'}`}>
+                              {s === 'likes' ? 'Top Liked' : s === 'positive' ? 'Positive' : s === 'negative' ? 'Negative' : 'All'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <div className="space-y-2">
-                        {school.comments.slice(0, 20).map(c => (
-                          <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
-                            <div className="flex items-center gap-2 mb-1">
-                              <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 text-xs font-medium" />
-                              {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
-                              <span className="text-gray-600 text-xs">{c.relative_date}</span>
-                            </div>
-                            <p className="text-sm text-gray-300">{c.comment_text}</p>
-                          </div>
-                        ))}
+                        {(() => {
+                          const scored = school.comments.map(c => ({ ...c, _score: sentimentScore(c.comment_text || '') }))
+                          let sorted: typeof scored
+                          if (commentSort === 'positive') sorted = scored.filter(c => c._score > 0).sort((a, b) => b._score - a._score || b.likes - a.likes)
+                          else if (commentSort === 'negative') sorted = scored.filter(c => c._score < 0).sort((a, b) => a._score - b._score || b.likes - a.likes)
+                          else if (commentSort === 'likes') sorted = scored.sort((a, b) => b.likes - a.likes)
+                          else sorted = scored
+                          return sorted.slice(0, 30).map(c => {
+                            const sl = sentimentLabel(c._score)
+                            return (
+                              <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 text-xs font-medium" />
+                                  {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
+                                  <span className={`text-xs px-1.5 py-0.5 rounded ${sl.color}`}>{sl.text}</span>
+                                  <span className="text-gray-600 text-xs">{c.relative_date}</span>
+                                  {postUrlMap[c.post_id] && <a href={postUrlMap[c.post_id]} target="_blank" rel="noopener" className="text-xs text-blue-500 hover:underline ml-auto" onClick={e => e.stopPropagation()}>View post &rarr;</a>}
+                                </div>
+                                <p className="text-sm text-gray-300">{c.comment_text}</p>
+                              </div>
+                            )
+                          })
+                        })()}
                       </div>
                     </div>
                   </div>
