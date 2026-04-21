@@ -4,6 +4,18 @@ import { supabase } from '@/lib/supabase'
 
 type Post = { id: number; post_url: string; post_text: string; author_name: string | null; date_relative: string; scraped_comment_count: number }
 type Comment = { id: number; post_id: number; author_name: string; comment_text: string; relative_date: string; likes: number; is_reply: boolean; author_profile_url?: string | null }
+type Member = { id: number; name: string | null; profile_url: string; classification: string | null; classification_confidence: string | null; post_count: number; comment_count: number; sources: string[] | null }
+
+const CLASS_STYLES: Record<string, { label: string; cls: string }> = {
+  parent: { label: 'parent', cls: 'bg-emerald-500/15 text-emerald-300' },
+  school_or_org: { label: 'school/org', cls: 'bg-amber-500/15 text-amber-300' },
+  vendor: { label: 'vendor', cls: 'bg-orange-500/15 text-orange-300' },
+  realtor: { label: 'realtor', cls: 'bg-fuchsia-500/15 text-fuchsia-300' },
+  promoter: { label: 'promoter', cls: 'bg-red-500/15 text-red-300' },
+  anonymous: { label: 'anon', cls: 'bg-gray-600/30 text-gray-400' },
+  anonymous_pseudonym: { label: 'anon/pseudo', cls: 'bg-gray-600/30 text-gray-400' },
+  silent_member: { label: 'silent', cls: 'bg-slate-600/20 text-slate-400' },
+}
 
 const SCHOOLS: [string, RegExp][] = [
   ['Great Hearts', /great\s*hearts/i],
@@ -74,10 +86,19 @@ function fbProfileUrl(name: string) {
   return `https://www.facebook.com/search/people/?q=${encodeURIComponent(name)}`
 }
 
-function AuthorLink({ name, profileUrl, className = '' }: { name: string; profileUrl?: string | null; className?: string }) {
+function ClassPill({ classification, confidence }: { classification?: string | null; confidence?: string | null }) {
+  if (!classification) return null
+  const s = CLASS_STYLES[classification]
+  if (!s) return null
+  return <span className={`ml-1.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${s.cls}`} title={`${classification}${confidence ? ` (${confidence})` : ''}`}>{s.label}</span>
+}
+
+function AuthorLink({ name, profileUrl, classification, confidence, className = '' }: { name: string; profileUrl?: string | null; classification?: string | null; confidence?: string | null; className?: string }) {
   const url = profileUrl || fbProfileUrl(name)
-  if (!url) return <span className={className}>{name || 'Anonymous'}</span>
-  return <a href={url} target="_blank" rel="noopener" className={`${className} hover:underline cursor-pointer`} onClick={e => e.stopPropagation()}>{name}</a>
+  const inner = url
+    ? <a href={url} target="_blank" rel="noopener" className={`${className} hover:underline cursor-pointer`} onClick={e => e.stopPropagation()}>{name}</a>
+    : <span className={className}>{name || 'Anonymous'}</span>
+  return <span className="inline-flex items-center">{inner}<ClassPill classification={classification} confidence={confidence} /></span>
 }
 
 function PostLink({ url, children, className = '' }: { url: string; children: React.ReactNode; className?: string }) {
@@ -88,8 +109,11 @@ function PostLink({ url, children, className = '' }: { url: string; children: Re
 export default function Home() {
   const [posts, setPosts] = useState<Post[]>([])
   const [comments, setComments] = useState<Comment[]>([])
+  const [members, setMembers] = useState<Member[]>([])
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState<'overview' | 'schools' | 'commenters' | 'search' | 'export'>('overview')
+  const [tab, setTab] = useState<'overview' | 'schools' | 'commenters' | 'members' | 'search' | 'export'>('overview')
+  const [memberClassFilter, setMemberClassFilter] = useState<string>('all')
+  const [memberSearch, setMemberSearch] = useState<string>('')
   const [selectedSchool, setSelectedSchool] = useState<string | null>(null)
   const [selectedCommenter, setSelectedCommenter] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -99,12 +123,26 @@ export default function Home() {
 
   useEffect(() => {
     async function load() {
-      const [{ data: p }, { data: c }] = await Promise.all([
+      async function fetchAllMembers(): Promise<Member[]> {
+        const all: Member[] = []
+        for (let from = 0; from < 20000; from += 1000) {
+          const { data, error } = await supabase.from('fb_members')
+            .select('id, name, profile_url, classification, classification_confidence, post_count, comment_count, sources')
+            .range(from, from + 999)
+          if (error || !data || data.length === 0) break
+          all.push(...data)
+          if (data.length < 1000) break
+        }
+        return all
+      }
+      const [{ data: p }, { data: c }, m] = await Promise.all([
         supabase.from('fb_school_discussions').select('id, post_url, post_text, author_name, date_relative, scraped_comment_count').order('scraped_comment_count', { ascending: false }),
-        supabase.from('fb_comments').select('id, post_id, author_name, comment_text, relative_date, likes, is_reply, author_profile_url').order('likes', { ascending: false })
+        supabase.from('fb_comments').select('id, post_id, author_name, comment_text, relative_date, likes, is_reply, author_profile_url').order('likes', { ascending: false }),
+        fetchAllMembers()
       ])
       setPosts(p || [])
       setComments(c || [])
+      setMembers(m)
       setLoading(false)
     }
     load()
@@ -129,8 +167,27 @@ export default function Home() {
         map[c.author_name] = c.author_profile_url
       }
     })
+    members.forEach(m => { if (m.name && m.profile_url && !map[m.name]) map[m.name] = m.profile_url })
     return map
-  }, [comments])
+  }, [comments, members])
+
+  const memberByName = useMemo(() => {
+    const map: Record<string, Member> = {}
+    members.forEach(m => { if (m.name) map[m.name] = m })
+    return map
+  }, [members])
+
+  const memberByUrl = useMemo(() => {
+    const map: Record<string, Member> = {}
+    members.forEach(m => { if (m.profile_url) map[m.profile_url] = m })
+    return map
+  }, [members])
+
+  const classForName = (name?: string | null, profileUrl?: string | null) => {
+    if (profileUrl && memberByUrl[profileUrl]) return { classification: memberByUrl[profileUrl].classification, confidence: memberByUrl[profileUrl].classification_confidence }
+    if (name && memberByName[name]) return { classification: memberByName[name].classification, confidence: memberByName[name].classification_confidence }
+    return { classification: null, confidence: null }
+  }
 
   const schoolMentions = useMemo(() => {
     const counts: Record<string, { posts: Post[]; comments: Comment[]; name: string }> = {}
@@ -200,10 +257,10 @@ export default function Home() {
 
         {/* Tabs */}
         <div className="flex gap-1 mb-8 border-b border-gray-800 pb-px">
-          {(['overview', 'schools', 'commenters', 'search', 'export'] as const).map(t => (
+          {(['overview', 'schools', 'commenters', 'members', 'search', 'export'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${tab === t ? 'bg-gray-800 text-white border-b-2 border-blue-500' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-900'}`}>
-              {t === 'overview' ? 'Overview' : t === 'schools' ? 'Schools' : t === 'commenters' ? 'Top Commenters' : t === 'search' ? 'Search' : 'Export'}
+              {t === 'overview' ? 'Overview' : t === 'schools' ? 'Schools' : t === 'commenters' ? 'Top Commenters' : t === 'members' ? `Members (${members.length.toLocaleString()})` : t === 'search' ? 'Search' : 'Export'}
             </button>
           ))}
         </div>
@@ -261,7 +318,7 @@ export default function Home() {
                   {comments.slice(0, 100).map(c => (
                     <div key={c.id} className="p-2 rounded hover:bg-gray-800/50">
                       <div className="flex items-center gap-2 mb-1">
-                        <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 text-xs font-medium" />
+                        <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} classification={classForName(c.author_name, c.author_profile_url).classification} confidence={classForName(c.author_name, c.author_profile_url).confidence} className="text-blue-400 text-xs font-medium" />
                         {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
                         {postUrlMap[c.post_id] && <a href={postUrlMap[c.post_id]} target="_blank" rel="noopener" className="text-xs text-blue-500 hover:underline ml-auto">View post &rarr;</a>}
                       </div>
@@ -313,7 +370,7 @@ export default function Home() {
                           <div className="mt-2 space-y-1.5 border-l-2 border-gray-700 pl-3">
                             {commentsByPost[p.id].slice(0, 5).map(c => (
                               <div key={c.id} className="text-xs">
-                                <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400" />
+                                <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} classification={classForName(c.author_name, c.author_profile_url).classification} confidence={classForName(c.author_name, c.author_profile_url).confidence} className="text-blue-400" />
                                 {c.likes > 0 && <span className="text-yellow-600 ml-1">({c.likes})</span>}
                                 <span className="text-gray-400 ml-1">{c.comment_text?.substring(0, 120)}...</span>
                               </div>
@@ -395,7 +452,7 @@ export default function Home() {
                               <div className="mt-3 border-t border-gray-800 pt-3 space-y-2">
                                 {commentsByPost[p.id].map(c => (
                                   <div key={c.id} className="text-xs pl-3 border-l-2 border-gray-700">
-                                    <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 font-medium" />
+                                    <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} classification={classForName(c.author_name, c.author_profile_url).classification} confidence={classForName(c.author_name, c.author_profile_url).confidence} className="text-blue-400 font-medium" />
                                     {c.likes > 0 && <span className="text-yellow-600 ml-1">{c.likes} likes</span>}
                                     <p className="text-gray-400 mt-0.5">{c.comment_text}</p>
                                   </div>
@@ -433,7 +490,7 @@ export default function Home() {
                             return (
                               <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                                 <div className="flex items-center gap-2 mb-1">
-                                  <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 text-xs font-medium" />
+                                  <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} classification={classForName(c.author_name, c.author_profile_url).classification} confidence={classForName(c.author_name, c.author_profile_url).confidence} className="text-blue-400 text-xs font-medium" />
                                   {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
                                   <span className={`text-xs px-1.5 py-0.5 rounded ${sl.color}`}>{sl.text}</span>
                                   <span className="text-gray-600 text-xs">{c.relative_date}</span>
@@ -505,6 +562,81 @@ export default function Home() {
           </div>
         )}
 
+        {/* ===== MEMBERS TAB ===== */}
+        {tab === 'members' && (
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold">Group Members ({members.length.toLocaleString()})</h2>
+              <p className="text-xs text-gray-500 mt-0.5">Classified by name patterns + post/comment content. "low" confidence = best guess.</p>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {(() => {
+                const counts: Record<string, number> = { all: members.length }
+                members.forEach(m => { const k = m.classification || 'unknown'; counts[k] = (counts[k] || 0) + 1 })
+                const chips = ['all','parent','school_or_org','vendor','realtor','promoter','anonymous','anonymous_pseudonym','silent_member']
+                return chips.map(c => {
+                  if (c !== 'all' && !counts[c]) return null
+                  const s = CLASS_STYLES[c]
+                  return (
+                    <button key={c} onClick={() => setMemberClassFilter(c)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${memberClassFilter === c ? 'bg-blue-600/20 text-blue-400 border border-blue-600/30' : 'bg-gray-900 border border-gray-800 text-gray-400 hover:text-gray-200'}`}>
+                      <span>{c === 'all' ? 'All' : (s?.label || c)}</span>
+                      <span className="text-gray-600">{counts[c] || 0}</span>
+                    </button>
+                  )
+                })
+              })()}
+            </div>
+
+            <input type="text" placeholder="Search member by name..." value={memberSearch} onChange={e => setMemberSearch(e.target.value)}
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500" />
+
+            <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
+                    <th className="text-left px-4 py-3">Name</th>
+                    <th className="text-left px-4 py-3">Type</th>
+                    <th className="text-left px-4 py-3">Conf.</th>
+                    <th className="text-right px-4 py-3">Posts</th>
+                    <th className="text-right px-4 py-3">Comments</th>
+                    <th className="text-left px-4 py-3">Profile</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const q = memberSearch.trim().toLowerCase()
+                    const filtered = members
+                      .filter(m => memberClassFilter === 'all' || m.classification === memberClassFilter)
+                      .filter(m => !q || (m.name || '').toLowerCase().includes(q))
+                      .sort((a, b) => (b.post_count + b.comment_count) - (a.post_count + a.comment_count))
+                    const view = filtered.slice(0, 300)
+                    return (<>
+                      {view.map(m => {
+                        const s = m.classification ? CLASS_STYLES[m.classification] : null
+                        return (
+                          <tr key={m.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                            <td className="px-4 py-2.5 text-gray-200">{m.name || '(no name)'}</td>
+                            <td className="px-4 py-2.5">{s ? <span className={`px-1.5 py-0.5 rounded text-[11px] ${s.cls}`}>{s.label}</span> : <span className="text-gray-600 text-xs">—</span>}</td>
+                            <td className="px-4 py-2.5 text-gray-500 text-xs">{m.classification_confidence || '—'}</td>
+                            <td className="px-4 py-2.5 text-right text-gray-400">{m.post_count || 0}</td>
+                            <td className="px-4 py-2.5 text-right text-gray-400">{m.comment_count || 0}</td>
+                            <td className="px-4 py-2.5"><a href={m.profile_url} target="_blank" rel="noopener" className="text-blue-500 hover:underline text-xs">open &rarr;</a></td>
+                          </tr>
+                        )
+                      })}
+                      {filtered.length > 300 && (
+                        <tr><td colSpan={6} className="text-xs text-gray-600 text-center py-3 border-t border-gray-800">Showing top 300 of {filtered.length.toLocaleString()}. Refine filter/search to see more.</td></tr>
+                      )}
+                    </>)
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* ===== SEARCH TAB ===== */}
         {tab === 'search' && (
           <div className="space-y-6">
@@ -539,7 +671,7 @@ export default function Home() {
                       {searchResults.comments.slice(0, 30).map(c => (
                         <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                           <div className="flex items-center gap-2 mb-1">
-                            <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} className="text-blue-400 text-xs font-medium" />
+                            <AuthorLink name={c.author_name || 'Anon'} profileUrl={c.author_profile_url || profileUrlMap[c.author_name]} classification={classForName(c.author_name, c.author_profile_url).classification} confidence={classForName(c.author_name, c.author_profile_url).confidence} className="text-blue-400 text-xs font-medium" />
                             {c.likes > 0 && <span className="text-yellow-500 text-xs">{c.likes} likes</span>}
                             {postUrlMap[c.post_id] && <a href={postUrlMap[c.post_id]} target="_blank" rel="noopener" className="text-xs text-blue-500 hover:underline ml-auto">View post &rarr;</a>}
                           </div>
